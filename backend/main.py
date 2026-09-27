@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from answer_engine import find_answer
+
 app = FastAPI()
 
 
@@ -16,7 +18,13 @@ def home():
 
 @app.post("/answer")
 def answer_question(data: QuestionRequest):
+
+    answer, confidence = find_answer(
+        data.question,
+        data.options
+    )
+
     return {
-        "answer": "B",
-        "confidence": 1.0
+        "answer": answer,
+        "confidence": confidence
     }
