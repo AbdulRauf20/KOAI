@@ -2,784 +2,170 @@
 
 ### Kahoot Optimization AI
 
-KOAI is an experimental low-latency AI system designed to capture multiple-choice quiz questions, extract the question and options using OCR, determine the most likely answer using a combination of local knowledge and AI, and return the result as quickly as possible.
+KOAI is an experimental **low-latency real-time multiple-choice question answering pipeline**. The end goal: look at a quiz question on a phone screen, extract the question and options (OCR), ask an AI model, and demonstrate an automated answer action in a **local/mock quiz environment** — while measuring the latency of every stage.
 
-The project combines **Flutter, Python backend development, OCR, NLP/AI, Android development, and performance optimization**.
+> **Capture → Extract → Understand → Decide → Act → Measure**
 
-> **Read → Understand → Answer → Measure**
+There is **no question database**. Every question can be completely unseen; the AI answers it at runtime.
+
+All automated-answer functionality is demonstrated against a locally created mock quiz screen only — not against any third-party quiz platform.
 
 ---
 
-## 🚀 Project Goal
-
-The goal of KOAI is to build a fast and reliable system capable of processing a multiple-choice question through the following pipeline:
+## Architecture
 
 ```text
-Question on Screen
-       ↓
-Screen Capture
-       ↓
-OCR
-       ↓
-Question Parser
-       ↓
-Answer Engine
-   ↙          ↘
-Local KB      AI
-   ↘          ↙
-     Answer
-       ↓
-Flutter UI
-       ↓
-Performance Metrics
+┌─────────────────── ANDROID DEVICE ───────────────────┐
+│  Mock Quiz Screen → MediaProjection Screenshot        │
+│        → Crop → ML Kit OCR → Question Parser          │
+│        → { question, options[] }  (~0.5 KB JSON)      │
+└──────────────────────────┬────────────────────────────┘
+                           │ HTTP POST /answer
+┌────────────────── BACKEND (FastAPI) ──────────────────┐
+│  validate → AI Engine → AIProvider interface          │
+│                         └─ Groq (swappable)           │
+└──────────────────────────┬────────────────────────────┘
+                           │ { answer, confidence, metrics }
+┌──────────────────────────┴────────────────────────────┐
+│  Flutter UI: show answer → simulated tap on mock quiz │
+└───────────────────────────────────────────────────────┘
 ```
 
-The main focus of the project is **accuracy, speed, and measurable performance**.
+Design decisions:
 
----
+- **OCR and parsing run on-device** (ML Kit) — sending text instead of images avoids uploading ~100 KB screenshots and is the single biggest latency win.
+- **The backend is a thin async proxy** — validate, call AI, validate AI output, return. No database, no state.
+- **The AI provider is swappable** via the `AIProvider` interface. Current provider: Groq (`openai/gpt-oss-20b`) — lowest time-to-first-token among no-card free tiers.
 
-# 🛠️ Technology Stack
+## Technology stack
 
-## Mobile
+- **Mobile:** Flutter / Dart, Android (MediaProjection planned), Google ML Kit (planned)
+- **Backend:** Python 3.12, FastAPI, Uvicorn, Pydantic, httpx (async)
+- **AI:** Groq API (`openai/gpt-oss-20b`), structured JSON output
+- **Testing:** pytest, flutter_test
 
-* Flutter
-* Dart
-* Android
-* Android MediaProjection
-* Android Accessibility APIs where appropriate
-
-## Backend
-
-* Python
-* FastAPI
-* Pydantic
-* REST APIs
-* Async Python
-
-## OCR
-
-* Google ML Kit Text Recognition
-
-## AI / NLP
-
-* LLM API
-* scikit-learn
-* Sentence Transformers
-* PyTorch
-
-These technologies will be introduced gradually. The project will start with a simple local knowledge engine instead of immediately training a complex model.
-
-## Database / Storage
-
-Initially:
-
-* JSON
-
-Later:
-
-* SQLite
-* Firebase
-
-## Development
-
-* Git
-* GitHub
-* VS Code
-* Postman / Thunder Client
-* pytest
-
----
-
-# 📁 Project Structure
+## Project structure
 
 ```text
 KOAI/
-│
-├── mobile/
-│   └── Flutter Android application
-│
+├── mobile/koai/            # Flutter app
+│   └── lib/
+│       ├── main.dart
+│       ├── models/answer.dart
+│       ├── services/api_service.dart
+│       └── screens/home_screen.dart
 ├── backend/
-│   ├── API
-│   ├── answer engine
-│   ├── OCR processing
-│   └── AI integration
-│
-├── knowledge/
-│   ├── ml.json
-│   └── dbms.json
-│
+│   ├── main.py             # FastAPI app + endpoints
+│   ├── config.py           # settings from .env
+│   ├── models/schemas.py   # Pydantic request/response models
+│   ├── providers/          # AIProvider interface + Groq implementation
+│   ├── services/ai_engine.py
+│   └── tests/test_api.py
 ├── experiments/
-│   ├── OCR experiments
-│   ├── latency experiments
-│   └── model experiments
-│
-├── tests/
-│
+│   └── ai_latency/         # measured latency baselines
 ├── docs/
-│
-├── .gitignore
-├── README.md
-└── LICENSE
+└── README.md
 ```
 
----
+## Setup
 
-# 🗺️ Development Roadmap
+### Backend
 
-## Phase 1 — Python Backend Foundation
+```bash
+cd backend
+python3 -m venv .venv          # already exists in this repo checkout
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env           # then paste your real Groq API key
+uvicorn main:app --reload
+```
 
-Build the initial backend using Python and FastAPI.
-
-### Tasks
-
-* [ ] Set up Python virtual environment
-* [ ] Learn FastAPI basics
-* [ ] Create FastAPI application
-* [ ] Understand REST APIs
-* [ ] Learn request/response handling
-* [ ] Create Pydantic models
-* [ ] Create `/answer` endpoint
-* [ ] Test API using Postman or curl
-
-### Initial API
+Environment variables (`backend/.env`, never committed):
 
 ```text
-POST /answer
+GROQ_API_KEY=your_api_key_here      # from console.groq.com
+GROQ_MODEL=openai/gpt-oss-20b
 ```
 
-Example request:
+### Flutter app
+
+```bash
+cd mobile/koai
+flutter pub get
+flutter run                    # pick a device: Android emulator / Linux desktop
+```
+
+Networking notes:
+
+- **Android emulator** reaches your PC's backend via `http://10.0.2.2:8000` (handled automatically in `api_service.dart`).
+- **Physical phone**: set `baseUrl` in `lib/services/api_service.dart` to your PC's LAN IP and start the backend with `uvicorn main:app --host 0.0.0.0`.
+- Debug builds allow cleartext HTTP (`android:usesCleartextTraffic="true"`); remove before any HTTPS deployment.
+
+## API
+
+### `GET /`
+
+```json
+{ "message": "KOAI Backend is running!" }
+```
+
+### `POST /answer`
+
+Request:
 
 ```json
 {
-  "question": "What is the output range of sigmoid?",
-  "options": [
-    "-1 to 1",
-    "0 to 1",
-    "0 to infinity",
-    "-infinity to infinity"
-  ]
+  "question": "Which protocol is connection-oriented?",
+  "options": ["UDP", "IP", "TCP", "ICMP"]
 }
 ```
 
-Example response:
+Response (`200`):
 
 ```json
 {
-  "answer": "B",
-  "confidence": 0.99
+  "answer": "C",
+  "confidence": 0.99,
+  "metrics": { "ai_ms": 679, "server_total_ms": 680 }
 }
 ```
 
-### Milestone
+Errors: `422` invalid request (missing/blank/too many options), `502` AI provider error, `504` AI provider timeout — always structured JSON, the server never crashes on AI failure.
 
-**Flutter/client → Python backend → JSON response**
+## Latency measurement
 
----
+Rule: **never subtract timestamps from two different clocks.**
 
-# Phase 2 — Local Knowledge Engine
+- Backend measures `ai_ms` and `server_total_ms` with `time.perf_counter()` and returns them in every response.
+- Flutter measures `round_trip_ms` with a `Stopwatch`.
+- Network overhead is derived: `round_trip_ms − server_total_ms`.
 
-Before using an AI API, build a fast local answer engine.
+Current baseline (2026-09-28, 5 questions, details in `experiments/ai_latency/`):
 
-Initial knowledge areas:
+- AI inference: 411–851 ms (mean ≈ 670 ms) — this is 99%+ of server time
+- Server overhead: ~1 ms
+- Accuracy: 5/5 (easy set; real benchmarking pending)
 
-### Machine Learning
+## Testing
 
-* Linear Regression
-* Logistic Regression
-* Sigmoid
-* Loss Functions
-* MSE
-* Gradient Descent
-* Classification
-* Training and Testing
-* Basic Neural Networks
-
-### Database Systems
-
-* SQL
-* SELECT
-* INSERT
-* UPDATE
-* DELETE
-* Joins
-* Keys
-* Constraints
-* Normalization
-* Transactions
-* ACID
-* Aggregation
-* Authorization
-
-Initial knowledge will be stored in JSON files.
-
-Example:
-
-```json
-{
-  "question": "What is the output range of sigmoid?",
-  "answer": "B",
-  "topic": "logistic_regression"
-}
+```bash
+cd backend && .venv/bin/python -m pytest tests/ -v   # 8 tests: API, validation, error handling
+cd mobile/koai && flutter test                        # widget smoke test
 ```
 
-### Milestone
+Tests use fake providers injected through FastAPI dependency overrides — no API key or network needed.
 
-A known question can be answered locally without an external AI request.
+## Status
 
----
+**Implemented (v0.1):** manual question → FastAPI → Groq → structured answer → Flutter UI with per-stage latency display. Backend tests, provider abstraction, secrets via `.env`.
 
-# Phase 3 — Flutter Application
+**Next:**
 
-Build the initial Android application.
+1. **v0.2** — Android screen capture (MediaProjection) + configurable crop
+2. **v0.3** — ML Kit OCR + question parser (tolerant of `A.` / `A)` / `A -` formats)
+3. **v0.4** — mock quiz screen + simulated tap; end-to-end latency breakdown
+4. **v0.5+** — model benchmarking (`gpt-oss-120b` vs `20b` vs others), prompt/latency optimization
 
-### Tasks
-
-* [ ] Create Flutter project
-* [ ] Design basic KOAI interface
-* [ ] Add question display
-* [ ] Add answer display
-* [ ] Add confidence display
-* [ ] Add latency display
-* [ ] Connect Flutter to FastAPI
-
-Initial interface:
-
-```text
-+-------------------------+
-|          KOAI           |
-|                         |
-|   Question detected     |
-|                         |
-|       Answer: B         |
-|                         |
-|   Confidence: 98%       |
-|   Latency: 184 ms       |
-|                         |
-+-------------------------+
-```
-
-The first version will prioritize **functionality and speed over UI design**.
-
----
-
-# Phase 4 — Screen Capture
-
-Enable KOAI to capture the relevant portion of the Android screen.
-
-### Tasks
-
-* [ ] Research Android MediaProjection
-* [ ] Implement screen capture
-* [ ] Capture screenshots
-* [ ] Optimize screenshot resolution
-* [ ] Crop unnecessary screen regions
-
-### Pipeline
-
-```text
-Android Screen
-      ↓
-Screen Capture
-      ↓
-Screenshot
-```
-
-### Milestone
-
-KOAI can obtain the current quiz screen as an image.
-
----
-
-# Phase 5 — OCR
-
-Use Google ML Kit to extract text from the captured screen.
-
-### Tasks
-
-* [ ] Integrate ML Kit
-* [ ] Send screenshot to OCR
-* [ ] Extract raw text
-* [ ] Test different screen sizes
-* [ ] Handle OCR errors
-* [ ] Measure OCR latency
-
-Example:
-
-```text
-Screenshot
-    ↓
-OCR
-    ↓
-What is the output range of sigmoid?
-
-A -1 to 1
-B 0 to 1
-C 0 to infinity
-D -infinity to infinity
-```
-
-### Milestone
-
-**Screenshot → readable text**
-
----
-
-# Phase 6 — Question Parser
-
-Convert raw OCR text into structured question data.
-
-### Input
-
-```text
-What is the output range of sigmoid?
-
-A -1 to 1
-B 0 to 1
-C 0 to infinity
-D -infinity to infinity
-```
-
-### Output
-
-```json
-{
-  "question": "What is the output range of sigmoid?",
-  "options": {
-    "A": "-1 to 1",
-    "B": "0 to 1",
-    "C": "0 to infinity",
-    "D": "-infinity to infinity"
-  }
-}
-```
-
-### Tasks
-
-* [ ] Detect question text
-* [ ] Detect options
-* [ ] Handle different option layouts
-* [ ] Clean OCR errors
-* [ ] Handle missing characters
-* [ ] Validate extracted questions
-
-### Milestone
-
-**OCR text → structured question**
-
----
-
-# Phase 7 — AI Answer Engine
-
-Introduce an AI model as a fallback when the local knowledge engine cannot confidently answer a question.
-
-```text
-                 Question
-                    ↓
-             Local Knowledge
-               /         \
-            Found       Not Found
-              ↓            ↓
-           Answer       AI Model
-                           ↓
-                         Answer
-```
-
-The AI should return structured data.
-
-Example:
-
-```json
-{
-  "answer": "B",
-  "confidence": 0.96
-}
-```
-
-### Tasks
-
-* [ ] Integrate AI API
-* [ ] Design structured prompt
-* [ ] Validate AI responses
-* [ ] Add confidence handling
-* [ ] Handle API failures
-* [ ] Measure API latency
-* [ ] Add fallback behavior
-
----
-
-# Phase 8 — End-to-End Pipeline
-
-Connect every component.
-
-```text
-Android Screen
-      ↓
-Screen Capture
-      ↓
-OCR
-      ↓
-Question Parser
-      ↓
-Local Knowledge Engine
-      ↓
-AI Fallback
-      ↓
-Answer
-      ↓
-Flutter UI
-```
-
-### Milestone
-
-A question visible on the Android device can travel through the complete KOAI pipeline and produce an answer.
-
----
-
-# Phase 9 — Dataset
-
-Build a high-quality dataset of multiple-choice questions.
-
-### Dataset fields
-
-```text
-question
-option_A
-option_B
-option_C
-option_D
-answer
-topic
-difficulty
-source
-```
-
-Example:
-
-```text
-What is the output range of sigmoid?
--1 to 1
-0 to 1
-0 to infinity
--infinity to infinity
-B
-Logistic Regression
-Easy
-Lab
-```
-
-### Initial target
-
-**500–2,000 high-quality questions**
-
-Potential categories:
-
-* Machine Learning
-* Database Systems
-* SQL
-* Computer Science fundamentals
-
-The goal is **quality and diversity**, not simply creating a huge dataset.
-
----
-
-# Phase 10 — ML / NLP Experiments
-
-Once enough data has been collected, experiment with different answering approaches.
-
-### Approaches
-
-1. Rule-based knowledge engine
-2. Keyword matching
-3. Vector similarity
-4. Embedding-based retrieval
-5. LLM API
-6. Small local ML/NLP model
-
-Compare:
-
-| Approach         | Accuracy | Latency | Cost |
-| ---------------- | -------: | ------: | ---: |
-| Rules            |      TBD |     TBD | Free |
-| Keyword Matching |      TBD |     TBD | Free |
-| Vector Search    |      TBD |     TBD | Free |
-| LLM API          |      TBD |     TBD |  API |
-| Local Model      |      TBD |     TBD | Free |
-
-A trained model will only be introduced if experiments show that it provides a meaningful improvement.
-
----
-
-# Phase 11 — Performance Optimization
-
-KOAI is designed around low latency.
-
-Measure every stage:
-
-```text
-Screen Capture
-      ↓
-OCR
-      ↓
-Parsing
-      ↓
-Knowledge Search
-      ↓
-AI Inference
-      ↓
-UI Response
-```
-
-Example benchmark:
-
-```text
-Capture       80 ms
-OCR          120 ms
-Parsing       15 ms
-Knowledge      3 ms
-AI           700 ms
-UI            50 ms
--------------------
-Total        968 ms
-```
-
-### Optimization techniques
-
-* [ ] Crop unnecessary screen areas
-* [ ] Optimize OCR input
-* [ ] Cache repeated questions
-* [ ] Preload knowledge
-* [ ] Reduce network requests
-* [ ] Use local inference where practical
-* [ ] Async processing
-* [ ] Persistent connections
-* [ ] Smaller models
-* [ ] Parallel processing where appropriate
-
-### Goal
-
-Minimize end-to-end latency while maintaining reliable answer accuracy.
-
----
-
-# Phase 12 — Analytics
-
-Track KOAI's performance.
-
-Record:
-
-```text
-Question number
-Detected question
-Predicted answer
-Correct answer
-Correct / Incorrect
-OCR latency
-Inference latency
-Total latency
-Confidence
-```
-
-This allows us to identify exactly where the system is slow or making mistakes.
-
----
-
-# Phase 13 — Firebase Integration
-
-Firebase can be introduced later for the non-core application features.
-
-Potential uses:
-
-* Run history
-* Statistics
-* User accounts
-* Competition records
-* Leaderboards
-* Performance graphs
-
-Architecture:
-
-```text
-                 KOAI
-                  │
-       ┌──────────┴──────────┐
-       ↓                     ↓
- Python Backend          Firebase
-       │                     │
-       ↓                     ↓
- Answer Engine        Statistics
- OCR                  Leaderboard
- AI                   History
-```
-
-Firebase is **not required for the initial MVP**.
-
----
-
-# Phase 14 — Competition Integration
-
-After the core system is stable, integrate it with the agreed competition environment.
-
-The final pipeline can become:
-
-```text
-Question
-    ↓
-Screen Capture
-    ↓
-OCR
-    ↓
-Question Parser
-    ↓
-Answer Engine
-    ↓
-Answer
-    ↓
-Competition Interface
-```
-
-Performance should be recorded for every question.
-
----
-
-# 🎯 Final Success Criteria
-
-KOAI should eventually be able to:
-
-* [ ] Capture a multiple-choice question
-* [ ] Extract its text
-* [ ] Identify all options
-* [ ] Understand the question
-* [ ] Determine the answer
-* [ ] Handle unknown questions through AI
-* [ ] Return results with low latency
-* [ ] Measure its own performance
-* [ ] Maintain a high-quality question dataset
-* [ ] Compare different answering approaches
-* [ ] Provide useful analytics
-
----
-
-# 🧠 Development Philosophy
-
-KOAI will follow:
-
-> **Don't add complexity until the simpler solution stops being good enough.**
-
-The development path is:
-
-```text
-Python Backend
-      ↓
-Local Knowledge
-      ↓
-Flutter App
-      ↓
-Screen Capture
-      ↓
-OCR
-      ↓
-Question Parser
-      ↓
-AI Fallback
-      ↓
-Dataset
-      ↓
-ML/NLP Experiments
-      ↓
-Performance Optimization
-      ↓
-Analytics
-```
-
-We will **measure before optimizing** and **experiment before training a model**.
-
----
-
-# 📌 Current Status
-
-🚧 **Under Development**
-
-### Phase 1 — Backend Foundation
-
-* [ ] Python environment
-* [ ] FastAPI setup
-* [ ] First API endpoint
-* [ ] API testing
-
-### Phase 2 — Local Knowledge Engine
-
-* [ ] ML knowledge base
-* [ ] DBMS knowledge base
-* [ ] Answer matching
-
-### Phase 3 — Flutter
-
-* [ ] Flutter project
-* [ ] Basic UI
-* [ ] Backend connection
-
-### Phase 4 — Screen Capture
-
-* [ ] Android screen capture
-* [ ] Screenshot processing
-
-### Phase 5 — OCR
-
-* [ ] ML Kit integration
-* [ ] OCR processing
-
-### Phase 6 — Question Parser
-
-* [ ] Question extraction
-* [ ] Option extraction
-* [ ] OCR cleanup
-
-### Phase 7 — AI
-
-* [ ] AI API
-* [ ] Structured responses
-* [ ] Fallback system
-
-### Phase 8 — Integration
-
-* [ ] End-to-end pipeline
-
-### Phase 9 — Dataset
-
-* [ ] Question collection
-* [ ] Dataset cleaning
-* [ ] Dataset validation
-
-### Phase 10 — ML/NLP
-
-* [ ] Baselines
-* [ ] Embeddings
-* [ ] Local model experiments
-
-### Phase 11 — Optimization
-
-* [ ] Latency profiling
-* [ ] Bottleneck identification
-* [ ] Optimization
-
-### Phase 12 — Analytics
-
-* [ ] Performance tracking
-* [ ] Statistics
-
-### Phase 13 — Firebase
-
-* [ ] Optional leaderboard
-* [ ] History
-* [ ] Analytics
-
-### Phase 14 — Competition Integration
-
-* [ ] Final integration
-* [ ] End-to-end testing
-
----
-
-## 📜 License
+## License
 
 To be decided.
