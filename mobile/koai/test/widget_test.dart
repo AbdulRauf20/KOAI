@@ -9,8 +9,8 @@ void main() {
     await tester.pumpWidget(const KoaiApp());
 
     expect(find.text('KOAI'), findsOneWidget);
-    expect(find.text('Start KOAI'), findsOneWidget);
-    expect(find.text('Auto-tap correct answer'), findsOneWidget);
+    expect(find.text('Live screen capture (any app)'), findsOneWidget);
+    expect(find.text('Mock quiz demo'), findsOneWidget);
     expect(find.text('Manual question mode'), findsOneWidget);
   });
 

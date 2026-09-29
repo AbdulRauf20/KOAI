@@ -3,6 +3,9 @@ package com.example.koai
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -36,9 +39,21 @@ class MainActivity : FlutterActivity() {
                     )
                 }
 
+                "configure" -> {
+                    ScreenCaptureService.configure(
+                        (call.argument<Double>("scale")) ?: 0.5,
+                        (call.argument<Double>("cropL")) ?: 0.0,
+                        (call.argument<Double>("cropT")) ?: 0.0,
+                        (call.argument<Double>("cropR")) ?: 1.0,
+                        (call.argument<Double>("cropB")) ?: 1.0,
+                        (call.argument<Double>("threshold")) ?: 6.0
+                    )
+                    result.success(null)
+                }
+
                 "captureFrame" -> {
-                    val path = ScreenCaptureService.instance?.captureFrame()
-                    result.success(path) // null = no frame / not capturing
+                    // Returns a map (or null if the service isn't running).
+                    result.success(ScreenCaptureService.instance?.captureFrame())
                 }
 
                 "stopCapture" -> {
@@ -47,6 +62,44 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "isCapturing" -> result.success(ScreenCaptureService.instance != null)
+
+                "hasOverlayPermission" -> {
+                    val ok = if (Build.VERSION.SDK_INT >= 23) {
+                        Settings.canDrawOverlays(this)
+                    } else {
+                        true
+                    }
+                    result.success(ok)
+                }
+
+                "requestOverlayPermission" -> {
+                    if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+                        startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                        )
+                    }
+                    result.success(null)
+                }
+
+                "showOverlay" -> {
+                    ScreenCaptureService.instance?.showOverlay()
+                    result.success(null)
+                }
+
+                "updateOverlay" -> {
+                    ScreenCaptureService.instance?.updateOverlay(
+                        call.argument<String>("text") ?: ""
+                    )
+                    result.success(null)
+                }
+
+                "hideOverlay" -> {
+                    ScreenCaptureService.instance?.hideOverlay()
+                    result.success(null)
+                }
 
                 else -> result.notImplemented()
             }

@@ -2,13 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../models/answer.dart';
 import '../services/api_service.dart';
-import '../services/pipeline_service.dart';
 
 class _QuizItem {
   final String question;
   final List<String> options;
-  final String correct; // letter, for feedback only — KOAI never sees this
+  final String correct; // for feedback only — KOAI never sees this
   const _QuizItem(this.question, this.options, this.correct);
 }
 
@@ -32,6 +32,10 @@ const _optionColors = [
   Color(0xFF26890C), // green
 ];
 
+/// Self-contained Kahoot-style demo. It already knows its own question, so it
+/// asks the backend AI directly (no capture/OCR needed) and optionally
+/// auto-taps the suggested answer. Good for demoing the AI + auto-tap loop
+/// on desktop where screen capture isn't available.
 class MockQuizScreen extends StatefulWidget {
   final bool autoTap;
   final String baseUrl;
@@ -44,61 +48,49 @@ class MockQuizScreen extends StatefulWidget {
 }
 
 class _MockQuizScreenState extends State<MockQuizScreen> {
-  late final PipelineService _pipeline;
+  late final ApiService _api = ApiService(baseUrl: widget.baseUrl);
 
   int _index = 0;
   String? _selectedLetter;
   bool _selectedByKoai = false;
-  PipelineOutcome? _outcome;
-  bool _realCapture = false;
-  bool _starting = true;
+  bool _loading = false;
+  Answer? _answer;
+  String? _error;
+  int? _roundTripMs;
 
   _QuizItem get _item => _quizItems[_index];
 
   @override
   void initState() {
     super.initState();
-    _pipeline = PipelineService(api: ApiService(baseUrl: widget.baseUrl));
-    _startPipeline();
+    _ask();
   }
 
-  Future<void> _startPipeline() async {
-    // On Android this shows the system screen-capture consent dialog and
-    // starts the MediaProjection foreground service. Elsewhere it returns
-    // false and the pipeline runs in simulated-capture mode.
-    final real = await _pipeline.startCapture();
-    if (!mounted) return;
+  Future<void> _ask() async {
     setState(() {
-      _realCapture = real;
-      _starting = false;
+      _loading = true;
+      _answer = null;
+      _error = null;
     });
 
-    _pipeline.startLoop(
-      // Fallback for platforms without screen capture: feed the current
-      // question rendered the way OCR would read it off this screen.
-      simulatedOcrText: () {
-        final letters = ['A', 'B', 'C', 'D'];
-        final lines = [
-          _item.question,
-          for (var i = 0; i < _item.options.length; i++)
-            '${letters[i]}. ${_item.options[i]}',
-        ];
-        return lines.join('\n');
-      },
-      onResult: (outcome) {
-        if (!mounted) return;
-        setState(() => _outcome = outcome);
-        if (widget.autoTap &&
-            outcome.answerLetter != null &&
-            _selectedLetter == null) {
-          // Small delay so the suggestion is visible before the tap lands.
-          Timer(const Duration(milliseconds: 400), () {
-            if (!mounted || _selectedLetter != null) return;
-            _select(outcome.answerLetter!, byKoai: true);
-          });
-        }
-      },
-    );
+    final result = await _api.askQuestion(_item.question, _item.options);
+    if (!mounted) return;
+
+    setState(() {
+      _loading = false;
+      _answer = result.answer;
+      _error = result.error;
+      _roundTripMs = result.roundTripMs;
+    });
+
+    if (widget.autoTap &&
+        result.answer != null &&
+        _selectedLetter == null) {
+      Timer(const Duration(milliseconds: 500), () {
+        if (!mounted || _selectedLetter != null) return;
+        _select(result.answer!.answer, byKoai: true);
+      });
+    }
   }
 
   void _select(String letter, {bool byKoai = false}) {
@@ -113,23 +105,15 @@ class _MockQuizScreenState extends State<MockQuizScreen> {
       _index = (_index + 1) % _quizItems.length;
       _selectedLetter = null;
       _selectedByKoai = false;
-      _outcome = null;
     });
-  }
-
-  @override
-  void dispose() {
-    _pipeline.stop();
-    _pipeline.dispose();
-    super.dispose();
+    _ask();
   }
 
   @override
   Widget build(BuildContext context) {
     final letters = ['A', 'B', 'C', 'D'];
     return Scaffold(
-      // No title text: less noise for OCR to misread as question text.
-      appBar: AppBar(),
+      appBar: AppBar(title: const Text('Mock quiz')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -155,8 +139,8 @@ class _MockQuizScreenState extends State<MockQuizScreen> {
                 physics: const NeverScrollableScrollPhysics(),
                 children: [
                   for (var i = 0; i < _item.options.length; i++)
-                    _optionButton(letters[i], _item.options[i],
-                        _optionColors[i]),
+                    _optionButton(
+                        letters[i], _item.options[i], _optionColors[i]),
                 ],
               ),
             ),
@@ -175,14 +159,13 @@ class _MockQuizScreenState extends State<MockQuizScreen> {
 
     return FilledButton(
       style: FilledButton.styleFrom(
-        backgroundColor: answered && !selected ? color.withValues(alpha: 0.35) : color,
+        backgroundColor:
+            answered && !selected ? color.withValues(alpha: 0.35) : color,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
           side: selected
               ? BorderSide(
-                  color: isCorrect ? Colors.white : Colors.black,
-                  width: 4,
-                )
+                  color: isCorrect ? Colors.white : Colors.black, width: 4)
               : BorderSide.none,
         ),
       ),
@@ -198,7 +181,6 @@ class _MockQuizScreenState extends State<MockQuizScreen> {
   }
 
   Widget _statusPanel() {
-    final outcome = _outcome;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -207,65 +189,39 @@ class _MockQuizScreenState extends State<MockQuizScreen> {
           children: [
             Row(
               children: [
-                Icon(
-                  _starting
-                      ? Icons.hourglass_top
-                      : (_realCapture ? Icons.screenshot_monitor : Icons.science),
-                  size: 18,
-                ),
-                const SizedBox(width: 6),
                 Expanded(
-                  child: Text(
-                    _starting
-                        ? 'Starting KOAI…'
-                        : (_realCapture
-                            ? 'KOAI running — real screen capture + OCR'
-                            : 'KOAI running — simulated capture (no Android)'),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
+                  child: _loading
+                      ? const Text('KOAI is thinking…')
+                      : (_error != null
+                          ? Text('Error: $_error',
+                              style: const TextStyle(color: Colors.red))
+                          : _answer != null
+                              ? Text(
+                                  'KOAI suggests: ${_answer!.answer}'
+                                  '  (${(_answer!.confidence * 100).toStringAsFixed(0)}%)'
+                                  '${_selectedByKoai ? '  — auto-tapped' : ''}',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.bold),
+                                )
+                              : const Text('—')),
                 ),
                 TextButton(
-                  onPressed: _nextQuestion,
+                  onPressed: _loading ? null : _nextQuestion,
                   child: const Text('Next question'),
                 ),
               ],
             ),
-            if (outcome?.error != null)
-              Text('Pipeline error: ${outcome!.error}',
-                  style: const TextStyle(color: Colors.red)),
-            if (outcome?.answerLetter != null) ...[
+            if (_answer != null)
               Text(
-                'KOAI suggests: ${outcome!.answerLetter}'
-                '  (${((outcome.confidence ?? 0) * 100).toStringAsFixed(0)}%)'
-                '${_selectedByKoai ? '  — auto-tapped' : ''}',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.bold),
-              ),
-              Text(
-                _metricsLine(outcome.metrics),
+                'AI ${_answer!.aiMs} ms  ·  server ${_answer!.serverTotalMs} ms'
+                '  ·  round trip ${_roundTripMs ?? 0} ms',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
-            ],
           ],
         ),
       ),
     );
-  }
-
-  String _metricsLine(Map<String, int> m) {
-    final parts = <String>[];
-    void add(String label, String key) {
-      if (m.containsKey(key)) parts.add('$label ${m[key]} ms');
-    }
-
-    add('capture', 'capture_ms');
-    add('ocr', 'ocr_ms');
-    add('parse', 'parse_ms');
-    add('ai', 'ai_ms');
-    add('round trip', 'api_round_trip_ms');
-    add('total', 'total_ms');
-    return parts.join('  ·  ');
   }
 }
